@@ -1096,7 +1096,7 @@ impl AppState {
     }
 
     pub(super) fn handle_terminal_wheel(&mut self, mouse: MouseEvent) {
-        const LINES_PER_NOTCH: usize = 3;
+        let lines_per_notch = self.wheel_scroll_lines.max(1);
 
         if let Some(info) = self.pane_at(mouse.column, mouse.row).cloned() {
             self.focus_pane(info.id);
@@ -1104,8 +1104,8 @@ impl AppState {
                 return;
             }
             match mouse.kind {
-                MouseEventKind::ScrollUp => self.scroll_pane_up(info.id, LINES_PER_NOTCH),
-                MouseEventKind::ScrollDown => self.scroll_pane_down(info.id, LINES_PER_NOTCH),
+                MouseEventKind::ScrollUp => self.scroll_pane_up(info.id, lines_per_notch),
+                MouseEventKind::ScrollDown => self.scroll_pane_down(info.id, lines_per_notch),
                 _ => {}
             }
             return;
@@ -1114,8 +1114,8 @@ impl AppState {
         if let Some(info) = self.pane_frame_at(mouse.column, mouse.row).cloned() {
             self.focus_pane(info.id);
             match mouse.kind {
-                MouseEventKind::ScrollUp => self.scroll_pane_up(info.id, LINES_PER_NOTCH),
-                MouseEventKind::ScrollDown => self.scroll_pane_down(info.id, LINES_PER_NOTCH),
+                MouseEventKind::ScrollUp => self.scroll_pane_up(info.id, lines_per_notch),
+                MouseEventKind::ScrollDown => self.scroll_pane_down(info.id, lines_per_notch),
                 _ => {}
             }
             return;
@@ -1124,8 +1124,8 @@ impl AppState {
         if let Some(ws_idx) = self.active {
             if let Some(rt) = self.focused_runtime_in_workspace(ws_idx) {
                 match mouse.kind {
-                    MouseEventKind::ScrollUp => rt.scroll_up(LINES_PER_NOTCH),
-                    MouseEventKind::ScrollDown => rt.scroll_down(LINES_PER_NOTCH),
+                    MouseEventKind::ScrollUp => rt.scroll_up(lines_per_notch),
+                    MouseEventKind::ScrollDown => rt.scroll_down(lines_per_notch),
                     _ => {}
                 }
             }

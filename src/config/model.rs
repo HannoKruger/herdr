@@ -194,6 +194,10 @@ pub struct UiConfig {
     pub sidebar_max_width: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
     pub mouse_capture: bool,
+    /// Lines scrolled per mouse-wheel notch in pane scrollback. Default: 1.
+    /// Lower values give finer, smoother control on high-resolution touchpads;
+    /// raise it (e.g. 3) for faster scrolling with a notched mouse wheel.
+    pub wheel_scroll_lines: usize,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
     /// Ask for a tab name before creating a new tab. Default: true.
@@ -281,6 +285,7 @@ impl Default for UiConfig {
             sidebar_min_width: 18,
             sidebar_max_width: 36,
             mouse_capture: true,
+            wheel_scroll_lines: 1,
             confirm_close: true,
             prompt_new_tab_name: true,
             show_agent_labels_on_pane_borders: false,
@@ -419,6 +424,19 @@ mouse_capture = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.mouse_capture);
+    }
+
+    #[test]
+    fn wheel_scroll_lines_default_and_parse() {
+        let default_config = Config::default();
+        assert_eq!(default_config.ui.wheel_scroll_lines, 1);
+
+        let toml = r#"
+[ui]
+wheel_scroll_lines = 3
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.wheel_scroll_lines, 3);
     }
 
     #[test]

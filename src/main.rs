@@ -159,6 +159,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Pane apps like lazygit and btop can still receive mouse when they request it.
 # mouse_capture = true
 
+# Lines scrolled per mouse-wheel notch inside pane scrollback.
+# Lower values (e.g. 1) give finer, smoother scrolling on touchpads;
+# raise it (e.g. 3) for faster scrolling with a notched mouse wheel.
+# wheel_scroll_lines = 1
+
 # Ask for confirmation before closing a workspace
 # confirm_close = true
 
