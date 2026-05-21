@@ -47,20 +47,28 @@ fn main() {
         .trim()
         .to_string();
 
-    let status = Command::new("zig")
-        .arg("build")
-        .arg("-Demit-lib-vt")
-        .arg(format!("-Doptimize={optimize}"))
-        .arg(format!("-Dsimd={simd}"))
-        .arg(format!("-Dtarget={zig_target}"))
-        .arg(format!("-Dversion-string={version_string}"))
-        .current_dir(&vendored_dir)
-        .status()
-        .expect("failed to execute zig build for vendored libghostty-vt");
-    assert!(
-        status.success(),
-        "zig build for vendored libghostty-vt failed: {status}"
-    );
+    // Escape hatch: when LIBGHOSTTY_VT_PREBUILT is set, skip the zig build and
+    // use the static library already present in zig-out/lib (e.g. one that was
+    // cross-compiled on another host). Needed where a working zig toolchain is
+    // unavailable for this platform.
+    let prebuilt = env::var("LIBGHOSTTY_VT_PREBUILT").is_ok();
+    if !prebuilt {
+        let status = Command::new("zig")
+            .arg("build")
+            .arg("-Demit-lib-vt")
+            .arg(format!("-Doptimize={optimize}"))
+            .arg(format!("-Dsimd={simd}"))
+            .arg(format!("-Dtarget={zig_target}"))
+            .arg(format!("-Dversion-string={version_string}"))
+            .current_dir(&vendored_dir)
+            .status()
+            .expect("failed to execute zig build for vendored libghostty-vt");
+        assert!(
+            status.success(),
+            "zig build for vendored libghostty-vt failed: {status}"
+        );
+    }
+    println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_PREBUILT");
 
     let lib_dir = vendored_dir.join("zig-out/lib");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
