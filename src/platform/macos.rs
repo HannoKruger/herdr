@@ -510,50 +510,6 @@ fn procargs2_argv(buf: &[u8]) -> Option<Vec<String>> {
     Some(argv)
 }
 
-/// Read a single environment variable of a process.
-///
-/// The `KERN_PROCARGS2` buffer holds the environment block (NUL-separated
-/// `KEY=VALUE` entries) right after `argv`; this skips past `argv` and scans it.
-pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
-    let buf = kern_procargs2(pid)?;
-    let env = procargs2_env_slice(&buf)?;
-    super::parse_environ_var(env, key)
-}
-
-/// Slice of the `KERN_PROCARGS2` buffer that holds the environment block,
-/// i.e. everything after `exec_path` and the `argc` `argv` strings.
-fn procargs2_env_slice(buf: &[u8]) -> Option<&[u8]> {
-    if buf.len() < 4 {
-        return None;
-    }
-    let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]);
-    if argc < 0 {
-        return None;
-    }
-
-    let rest = &buf[4..];
-    let exec_end = rest.iter().position(|&b| b == 0)?;
-    let mut pos = exec_end;
-    while pos < rest.len() && rest[pos] == 0 {
-        pos += 1;
-    }
-
-    let mut current = pos;
-    for _ in 0..argc {
-        if current >= rest.len() {
-            return None;
-        }
-        let end = rest[current..]
-            .iter()
-            .position(|&b| b == 0)
-            .map(|offset| current + offset)
-            .unwrap_or(rest.len());
-        current = end + 1;
-    }
-
-    Some(&rest[current.min(rest.len())..])
-}
-
 /// Get the current working directory of a process.
 ///
 /// Uses `proc_pidinfo(PROC_PIDVNODEPATHINFO)` to read `pvi_cdir.vip_path`.
@@ -697,60 +653,6 @@ mod tests {
             buf.push(0);
         }
         buf
-    }
-
-    #[test]
-    fn procargs2_env_slice_reads_environment_after_argv() {
-        let buf = build_procargs2(
-            "/usr/local/bin/claude",
-            &["claude"],
-            &[
-                "PATH=/usr/bin",
-                "CLAUDE_CODE_SESSION_ID=43e78a1d-24a6-400f-8dc4-d4c9a70d9cc1",
-            ],
-        );
-        let env = procargs2_env_slice(&buf).expect("env slice");
-        assert_eq!(
-            super::super::parse_environ_var(env, "CLAUDE_CODE_SESSION_ID").as_deref(),
-            Some("43e78a1d-24a6-400f-8dc4-d4c9a70d9cc1")
-        );
-        assert_eq!(
-            super::super::parse_environ_var(env, "MISSING_VAR"),
-            None
-        );
-    }
-
-    #[test]
-    fn procargs2_env_slice_distinguishes_two_claude_processes() {
-        // Two `claude` processes started in the same directory: the session id
-        // is read from each process's own environment, never from the cwd.
-        let buf_a = build_procargs2(
-            "/usr/local/bin/claude",
-            &["claude"],
-            &[
-                "PWD=/work",
-                "CLAUDE_CODE_SESSION_ID=aaaaaaaa-0000-0000-0000-000000000001",
-            ],
-        );
-        let buf_b = build_procargs2(
-            "/usr/local/bin/claude",
-            &["claude"],
-            &[
-                "PWD=/work",
-                "CLAUDE_CODE_SESSION_ID=bbbbbbbb-0000-0000-0000-000000000002",
-            ],
-        );
-        let id_a = super::super::parse_environ_var(
-            procargs2_env_slice(&buf_a).expect("env a"),
-            "CLAUDE_CODE_SESSION_ID",
-        );
-        let id_b = super::super::parse_environ_var(
-            procargs2_env_slice(&buf_b).expect("env b"),
-            "CLAUDE_CODE_SESSION_ID",
-        );
-        assert_eq!(id_a.as_deref(), Some("aaaaaaaa-0000-0000-0000-000000000001"));
-        assert_eq!(id_b.as_deref(), Some("bbbbbbbb-0000-0000-0000-000000000002"));
-        assert_ne!(id_a, id_b);
     }
 
     #[test]

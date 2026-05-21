@@ -234,6 +234,10 @@ fn restore_tab(
                 if let Some(argv) = claude_argv {
                     terminal.launch_argv = Some(argv);
                 }
+                // Keep the id on the restored terminal so the next snapshot
+                // captures it again and the conversation survives further
+                // restarts.
+                terminal.claude_session_id = saved_claude_session;
                 panes.insert(*id, PaneState::new(terminal_id.clone()));
                 terminal_runtimes.insert(terminal_id, runtime);
                 terminals.push(terminal);

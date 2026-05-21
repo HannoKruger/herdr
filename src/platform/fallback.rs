@@ -31,11 +31,6 @@ pub fn process_exists(_pid: u32) -> bool {
 }
 
 /// Unsupported platform stub.
-pub fn process_env_var(_pid: u32, _key: &str) -> Option<String> {
-    None
-}
-
-/// Unsupported platform stub.
 pub fn write_clipboard(_bytes: &[u8]) -> bool {
     false
 }

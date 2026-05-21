@@ -43,6 +43,10 @@ pub struct TerminalState {
     pub state: AgentState,
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
+    /// Claude Code session UUID assigned when herdr launched this agent
+    /// (`claude --session-id <uuid>`). Persisted so a restored session can
+    /// resume the conversation with `claude --resume <uuid>`.
+    pub claude_session_id: Option<String>,
 }
 
 impl TerminalState {
@@ -59,6 +63,7 @@ impl TerminalState {
             state: AgentState::Unknown,
             revision: 0,
             launch_argv: None,
+            claude_session_id: None,
         }
     }
 

@@ -256,26 +256,6 @@ fn capture_workspace(
     }
 }
 
-/// Environment variable Claude Code exports with its session UUID.
-const CLAUDE_SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
-
-/// Resolve the Claude Code session UUID for the pane whose shell has PID
-/// `child_pid`.
-///
-/// Each `claude` process exports `CLAUDE_CODE_SESSION_ID` into its environment,
-/// so two agents running in the *same directory* are still told apart — the id
-/// is read from the agent process itself, never guessed from the cwd. The
-/// returned UUID is what `claude --resume <id>` accepts.
-fn claude_session_id_for_pane(child_pid: u32) -> Option<String> {
-    let job = crate::platform::foreground_job(child_pid)?;
-    job.processes
-        .iter()
-        .find_map(|process| {
-            crate::platform::process_env_var(process.pid, CLAUDE_SESSION_ENV)
-        })
-        .filter(|session_id| !session_id.is_empty())
-}
-
 fn capture_tab(
     tab: &crate::workspace::Tab,
     terminals: &std::collections::HashMap<
@@ -298,17 +278,10 @@ fn capture_tab(
             .and_then(|pane| terminals.get(&pane.attached_terminal_id));
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
         let agent_name = terminal.and_then(|terminal| terminal.agent_name.clone());
-        // For Claude Code panes, record the live session UUID — read from the
-        // agent process's own environment — so restore can resume the
-        // conversation rather than spawn a fresh shell.
-        let claude_session_id = terminal
-            .filter(|terminal| terminal.detected_agent == Some(crate::detect::Agent::Claude))
-            .and_then(|_| {
-                tab.panes
-                    .get(id)
-                    .and_then(|pane| terminal_runtimes.get(&pane.attached_terminal_id))
-            })
-            .and_then(|runtime| claude_session_id_for_pane(runtime.child_pid()));
+        // Claude Code session UUID assigned at launch — lets restore resume the
+        // conversation (`claude --resume <id>`) instead of spawning a shell.
+        let claude_session_id =
+            terminal.and_then(|terminal| terminal.claude_session_id.clone());
         panes.insert(
             id.raw(),
             PaneSnapshot {

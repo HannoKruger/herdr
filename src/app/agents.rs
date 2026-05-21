@@ -3,6 +3,41 @@ use std::path::PathBuf;
 use super::{terminal_targets::TerminalTargetError, App, Mode};
 use crate::api::schema::{AgentStartParams, SplitDirection};
 
+/// If `argv` launches Claude Code and does not already pin or resume a
+/// session, append `--session-id <uuid>` so herdr owns the conversation id.
+///
+/// Assigning the id at launch (rather than discovering it afterwards) is what
+/// lets a restored session resume the right conversation — and lets multiple
+/// Claude agents in the *same directory* each be resumed independently, since
+/// every launch gets its own fresh UUID. Returns the (possibly extended) argv
+/// and the assigned session id, if any.
+fn assign_claude_session(mut argv: Vec<String>) -> (Vec<String>, Option<String>) {
+    let is_claude = argv.first().is_some_and(|program| {
+        let base = std::path::Path::new(program)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(program);
+        matches!(base, "claude" | "claude-code")
+    });
+    if !is_claude {
+        return (argv, None);
+    }
+    // Respect a session the caller already chose on the command line.
+    let already_pinned = argv.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--session-id" | "--resume" | "-r" | "--continue" | "-c"
+        )
+    });
+    if already_pinned {
+        return (argv, None);
+    }
+    let session_id = uuid::Uuid::new_v4().to_string();
+    argv.push("--session-id".to_string());
+    argv.push(session_id.clone());
+    (argv, Some(session_id))
+}
+
 impl App {
     pub(super) fn collect_agent_infos(&self) -> Vec<crate::api::schema::AgentInfo> {
         self.state
@@ -126,7 +161,7 @@ impl App {
             .map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("/"));
-        let argv = params.argv;
+        let (argv, claude_session_id) = assign_claude_session(params.argv);
         let focus = params.focus;
         let (rows, cols) = self.state.estimate_pane_size();
 
@@ -199,6 +234,7 @@ impl App {
         };
         terminal.set_agent_name(name.clone());
         terminal.set_manual_label(name);
+        terminal.claude_session_id = claude_session_id;
         self.state.mark_session_dirty();
 
         let agent = self
@@ -461,4 +497,62 @@ pub(super) enum AgentRenameError {
         name: String,
         candidates: Vec<crate::api::schema::AgentInfo>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assign_claude_session;
+
+    fn argv(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn injects_session_id_for_claude() {
+        let (out, id) = assign_claude_session(argv(&["claude"]));
+        let id = id.expect("a claude launch should be assigned a session id");
+        assert_eq!(out, vec!["claude", "--session-id", id.as_str()]);
+        // A v4 UUID: 36 chars in 8-4-4-4-12 form.
+        assert_eq!(id.len(), 36);
+        assert_eq!(id.matches('-').count(), 4);
+    }
+
+    #[test]
+    fn each_launch_gets_a_distinct_session_id() {
+        // Two Claude agents — e.g. started in the same directory — must never
+        // collide: each launch is assigned its own fresh session id.
+        let (_, first) = assign_claude_session(argv(&["claude"]));
+        let (_, second) = assign_claude_session(argv(&["claude"]));
+        assert!(first.is_some() && second.is_some());
+        assert_ne!(first, second, "each agent launch needs a unique session");
+    }
+
+    #[test]
+    fn detects_claude_by_basename() {
+        let (out, id) = assign_claude_session(argv(&["/opt/homebrew/bin/claude"]));
+        assert!(id.is_some());
+        assert!(out.contains(&"--session-id".to_string()));
+    }
+
+    #[test]
+    fn keeps_explicit_session_flags_untouched() {
+        for flags in [
+            vec!["claude", "--resume", "abc"],
+            vec!["claude", "--session-id", "abc"],
+            vec!["claude", "-c"],
+            vec!["claude", "--continue"],
+        ] {
+            let original = argv(&flags);
+            let (out, id) = assign_claude_session(original.clone());
+            assert_eq!(out, original, "argv must be untouched for {flags:?}");
+            assert_eq!(id, None);
+        }
+    }
+
+    #[test]
+    fn leaves_non_claude_agents_alone() {
+        let (out, id) = assign_claude_session(argv(&["codex", "--foo"]));
+        assert_eq!(out, argv(&["codex", "--foo"]));
+        assert_eq!(id, None);
+    }
 }
