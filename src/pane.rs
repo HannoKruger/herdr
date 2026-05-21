@@ -1013,6 +1013,11 @@ impl PaneRuntime {
         let pid = self.child_pid.load(Ordering::Relaxed);
         crate::platform::process_cwd(pid)
     }
+
+    /// PID of the child shell process driving this pane (0 before it spawns).
+    pub fn child_pid(&self) -> u32 {
+        self.child_pid.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]

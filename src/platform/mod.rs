@@ -80,6 +80,20 @@ pub(crate) fn read_limited_reader(
     }
 }
 
+/// Extract `key`'s value from a NUL-separated `KEY=VALUE` environment block —
+/// the format of Linux `/proc/<pid>/environ` and the env section of the macOS
+/// `KERN_PROCARGS2` buffer. Reads a process's environment, which is fixed at
+/// exec time, so it is a stable per-process identifier (unlike open fds).
+pub(crate) fn parse_environ_var(environ: &[u8], key: &str) -> Option<String> {
+    let mut prefix = Vec::with_capacity(key.len() + 1);
+    prefix.extend_from_slice(key.as_bytes());
+    prefix.push(b'=');
+    environ
+        .split(|&byte| byte == 0)
+        .find(|entry| entry.starts_with(&prefix))
+        .map(|entry| String::from_utf8_lossy(&entry[prefix.len()..]).into_owned())
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
@@ -98,6 +112,64 @@ pub use fallback::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a NUL-separated environ block, like `/proc/<pid>/environ`.
+    fn environ_block(entries: &[&str]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for entry in entries {
+            buf.extend_from_slice(entry.as_bytes());
+            buf.push(0);
+        }
+        buf
+    }
+
+    #[test]
+    fn parse_environ_var_extracts_value() {
+        let env = environ_block(&[
+            "PATH=/usr/bin",
+            "CLAUDE_CODE_SESSION_ID=43e78a1d-24a6-400f-8dc4-d4c9a70d9cc1",
+            "TERM=xterm",
+        ]);
+        assert_eq!(
+            parse_environ_var(&env, "CLAUDE_CODE_SESSION_ID").as_deref(),
+            Some("43e78a1d-24a6-400f-8dc4-d4c9a70d9cc1")
+        );
+    }
+
+    #[test]
+    fn parse_environ_var_missing_key_is_none() {
+        let env = environ_block(&["PATH=/usr/bin", "TERM=xterm"]);
+        assert_eq!(parse_environ_var(&env, "CLAUDE_CODE_SESSION_ID"), None);
+        // A prefix that is not a full key must not match.
+        assert_eq!(parse_environ_var(&env, "PAT"), None);
+    }
+
+    #[test]
+    fn parse_environ_var_distinguishes_two_processes_in_the_same_dir() {
+        // Two Claude agents launched in the SAME directory: identical PWD,
+        // different session IDs. The id must come from the process env, so
+        // each is resolved independently and correctly.
+        let agent_a = environ_block(&[
+            "PWD=/Users/hanno/Projects/AppDock",
+            "CLAUDE_CODE_SESSION_ID=aaaaaaaa-0000-0000-0000-000000000001",
+        ]);
+        let agent_b = environ_block(&[
+            "PWD=/Users/hanno/Projects/AppDock",
+            "CLAUDE_CODE_SESSION_ID=bbbbbbbb-0000-0000-0000-000000000002",
+        ]);
+        assert_eq!(
+            parse_environ_var(&agent_a, "CLAUDE_CODE_SESSION_ID").as_deref(),
+            Some("aaaaaaaa-0000-0000-0000-000000000001")
+        );
+        assert_eq!(
+            parse_environ_var(&agent_b, "CLAUDE_CODE_SESSION_ID").as_deref(),
+            Some("bbbbbbbb-0000-0000-0000-000000000002")
+        );
+        assert_ne!(
+            parse_environ_var(&agent_a, "CLAUDE_CODE_SESSION_ID"),
+            parse_environ_var(&agent_b, "CLAUDE_CODE_SESSION_ID"),
+        );
+    }
 
     #[test]
     fn read_limited_reader_returns_complete_data_under_limit() {

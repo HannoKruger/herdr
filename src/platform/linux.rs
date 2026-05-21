@@ -95,6 +95,15 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
+/// Read a single environment variable of a process via `/proc/<pid>/environ`.
+pub fn process_env_var(pid: u32, key: &str) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    super::parse_environ_var(&environ, key)
+}
+
 pub fn session_processes(child_pid: u32) -> Vec<u32> {
     let Some(session_id) = process_session_id(child_pid) else {
         return Vec::new();

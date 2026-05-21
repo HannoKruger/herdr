@@ -178,19 +178,50 @@ fn restore_tab(
             .get(id)
             .and_then(|old_id| snap.panes.get(old_id))
             .and_then(|p| p.agent_name.clone());
+        let saved_claude_session = reverse_id_map
+            .get(id)
+            .and_then(|old_id| snap.panes.get(old_id))
+            .and_then(|p| p.claude_session_id.clone());
 
-        match TerminalRuntime::spawn(
-            *id,
-            rows,
-            cols,
-            cwd.clone(),
-            scrollback_limit_bytes,
-            crate::terminal_theme::TerminalTheme::default(),
-            default_shell,
-            events.clone(),
-            render_notify.clone(),
-            render_dirty.clone(),
-        ) {
+        // A pane that was running Claude Code is relaunched with
+        // `claude --resume <id>` so the conversation continues; every other
+        // pane gets a fresh shell as before.
+        let claude_argv = saved_claude_session.as_ref().map(|session_id| {
+            vec![
+                "claude".to_string(),
+                "--resume".to_string(),
+                session_id.clone(),
+            ]
+        });
+
+        let spawn_result = match &claude_argv {
+            Some(argv) => TerminalRuntime::spawn_argv_command(
+                *id,
+                rows,
+                cols,
+                cwd.clone(),
+                argv,
+                scrollback_limit_bytes,
+                crate::terminal_theme::TerminalTheme::default(),
+                events.clone(),
+                render_notify.clone(),
+                render_dirty.clone(),
+            ),
+            None => TerminalRuntime::spawn(
+                *id,
+                rows,
+                cols,
+                cwd.clone(),
+                scrollback_limit_bytes,
+                crate::terminal_theme::TerminalTheme::default(),
+                default_shell,
+                events.clone(),
+                render_notify.clone(),
+                render_dirty.clone(),
+            ),
+        };
+
+        match spawn_result {
             Ok(runtime) => {
                 let terminal_id = TerminalId::alloc();
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
@@ -199,6 +230,9 @@ fn restore_tab(
                 }
                 if let Some(agent_name) = saved_agent_name {
                     terminal.set_agent_name(agent_name);
+                }
+                if let Some(argv) = claude_argv {
+                    terminal.launch_argv = Some(argv);
                 }
                 panes.insert(*id, PaneState::new(terminal_id.clone()));
                 terminal_runtimes.insert(terminal_id, runtime);

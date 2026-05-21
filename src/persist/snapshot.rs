@@ -72,6 +72,11 @@ pub struct PaneSnapshot {
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
+    /// Active Claude Code session UUID when this pane was running Claude Code.
+    /// Lets restore relaunch the pane with `claude --resume <id>` so the
+    /// conversation continues instead of starting a bare shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_session_id: Option<String>,
 }
 
 /// Serializable BSP tree.
@@ -251,6 +256,26 @@ fn capture_workspace(
     }
 }
 
+/// Environment variable Claude Code exports with its session UUID.
+const CLAUDE_SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
+
+/// Resolve the Claude Code session UUID for the pane whose shell has PID
+/// `child_pid`.
+///
+/// Each `claude` process exports `CLAUDE_CODE_SESSION_ID` into its environment,
+/// so two agents running in the *same directory* are still told apart — the id
+/// is read from the agent process itself, never guessed from the cwd. The
+/// returned UUID is what `claude --resume <id>` accepts.
+fn claude_session_id_for_pane(child_pid: u32) -> Option<String> {
+    let job = crate::platform::foreground_job(child_pid)?;
+    job.processes
+        .iter()
+        .find_map(|process| {
+            crate::platform::process_env_var(process.pid, CLAUDE_SESSION_ENV)
+        })
+        .filter(|session_id| !session_id.is_empty())
+}
+
 fn capture_tab(
     tab: &crate::workspace::Tab,
     terminals: &std::collections::HashMap<
@@ -267,22 +292,30 @@ fn capture_tab(
         let cwd = tab
             .cwd_for_pane(*id, terminals, terminal_runtimes)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
-        let label = tab
+        let terminal = tab
             .panes
             .get(id)
-            .and_then(|pane| terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.manual_label.clone());
-        let agent_name = tab
-            .panes
-            .get(id)
-            .and_then(|pane| terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.agent_name.clone());
+            .and_then(|pane| terminals.get(&pane.attached_terminal_id));
+        let label = terminal.and_then(|terminal| terminal.manual_label.clone());
+        let agent_name = terminal.and_then(|terminal| terminal.agent_name.clone());
+        // For Claude Code panes, record the live session UUID — read from the
+        // agent process's own environment — so restore can resume the
+        // conversation rather than spawn a fresh shell.
+        let claude_session_id = terminal
+            .filter(|terminal| terminal.detected_agent == Some(crate::detect::Agent::Claude))
+            .and_then(|_| {
+                tab.panes
+                    .get(id)
+                    .and_then(|pane| terminal_runtimes.get(&pane.attached_terminal_id))
+            })
+            .and_then(|runtime| claude_session_id_for_pane(runtime.child_pid()));
         panes.insert(
             id.raw(),
             PaneSnapshot {
                 cwd,
                 label,
                 agent_name,
+                claude_session_id,
             },
         );
     }
@@ -344,6 +377,28 @@ mod tests {
     use crate::app::{state::AgentPanelScope, AppState, Mode};
     use crate::layout::NavDirection;
     use crate::workspace::Workspace;
+
+    #[test]
+    fn pane_snapshot_claude_session_id_round_trips() {
+        let pane = PaneSnapshot {
+            cwd: PathBuf::from("/work"),
+            label: None,
+            agent_name: Some("claude".into()),
+            claude_session_id: Some("43e78a1d-24a6-400f-8dc4-d4c9a70d9cc1".into()),
+        };
+        let json = serde_json::to_string(&pane).unwrap();
+        assert!(json.contains("claude_session_id"));
+        let back: PaneSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.claude_session_id.as_deref(),
+            Some("43e78a1d-24a6-400f-8dc4-d4c9a70d9cc1")
+        );
+
+        // Older snapshots without the field still parse (serde default).
+        let legacy: PaneSnapshot =
+            serde_json::from_str(r#"{"cwd":"/work"}"#).unwrap();
+        assert_eq!(legacy.claude_session_id, None);
+    }
 
     fn session_fixture(name: &str) -> &'static str {
         match name {
@@ -442,6 +497,7 @@ mod tests {
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
                 label: None,
                 agent_name: None,
+                claude_session_id: None,
             },
         );
         panes.insert(
@@ -450,6 +506,7 @@ mod tests {
                 cwd: PathBuf::from("/home/can/Projects/website"),
                 label: Some("website".into()),
                 agent_name: None,
+                claude_session_id: None,
             },
         );
 
@@ -764,6 +821,7 @@ mod tests {
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
                 label: None,
                 agent_name: None,
+                claude_session_id: None,
             },
         );
         panes.insert(
@@ -774,6 +832,7 @@ mod tests {
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),
                 label: None,
                 agent_name: None,
+                claude_session_id: None,
             },
         );
 
