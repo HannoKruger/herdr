@@ -5,8 +5,9 @@ use crossterm::terminal;
 use super::{
     auto_updates_enabled, repeat_key_identity, App, Mode, ANIMATION_INTERVAL,
     AUTO_UPDATE_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL, MIN_RENDER_INTERVAL,
-    RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
+    RESIZE_POLL_INTERVAL, SCROLL_ANIM_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
 };
+use crate::app::state::ScrollAnimation;
 use crate::events::AppEvent;
 use crate::workspace::{Workspace, WorkspaceGitStatus};
 
@@ -164,6 +165,20 @@ impl App {
             changed = true;
         }
 
+        // Drive the eased scrollback animation. The deadline is unset when a
+        // scroll is freshly queued, so the first step runs on this same pass.
+        if self.state.scroll_anim.is_some() {
+            if self
+                .scroll_anim_deadline
+                .map_or(true, |deadline| now >= deadline)
+            {
+                self.tick_scroll_animation(now);
+                changed = true;
+            }
+        } else {
+            self.scroll_anim_deadline = None;
+        }
+
         self.start_git_status_refresh_if_due(now);
 
         if self
@@ -287,6 +302,35 @@ impl App {
         self.selection_autoscroll_deadline = None;
     }
 
+    /// Advance the eased scrollback animation by one step. Moves the viewport
+    /// by an ease-out fraction of the remaining distance (always at least one
+    /// line) and reschedules until the target is reached.
+    pub(crate) fn tick_scroll_animation(&mut self, now: Instant) {
+        let Some(anim) = self.state.scroll_anim else {
+            self.scroll_anim_deadline = None;
+            return;
+        };
+
+        let step = anim.next_step();
+        if step > 0 {
+            self.state.scroll_pane_up(anim.pane_id, step as usize);
+        } else if step < 0 {
+            self.state.scroll_pane_down(anim.pane_id, step.unsigned_abs());
+        }
+
+        let remaining = anim.pending - step;
+        if remaining == 0 {
+            self.state.scroll_anim = None;
+            self.scroll_anim_deadline = None;
+        } else {
+            self.state.scroll_anim = Some(ScrollAnimation {
+                pane_id: anim.pane_id,
+                pending: remaining,
+            });
+            self.scroll_anim_deadline = Some(now + SCROLL_ANIM_INTERVAL);
+        }
+    }
+
     pub(crate) fn can_render_now(&self, now: Instant) -> bool {
         match self.last_render_at {
             Some(last_render_at) => now.duration_since(last_render_at) >= MIN_RENDER_INTERVAL,
@@ -391,6 +435,8 @@ impl App {
             self.next_auto_update_check,
             self.session_save_deadline,
             self.selection_autoscroll_deadline,
+            self.scroll_anim_deadline,
+            self.state.scroll_anim.is_some().then_some(now),
             render_deadline,
         ]
         .into_iter()
@@ -479,6 +525,41 @@ mod tests {
         app.tick_selection_autoscroll(now);
         assert!(app.state.selection_autoscroll.is_none());
         assert!(app.selection_autoscroll_deadline.is_none());
+    }
+
+    #[test]
+    fn queue_pane_scroll_accumulates_and_reversal_cancels() {
+        let (mut app, pane_id) = test_app_with_pane();
+        app.state.queue_pane_scroll(pane_id, 3);
+        app.state.queue_pane_scroll(pane_id, 2);
+        assert_eq!(app.state.scroll_anim.map(|a| a.pending), Some(5));
+        // Scrolling back the other way nets against pending travel.
+        app.state.queue_pane_scroll(pane_id, -5);
+        assert!(app.state.scroll_anim.is_none(), "exact reversal clears anim");
+    }
+
+    #[test]
+    fn tick_scroll_animation_drains_pending_and_clears() {
+        let (mut app, pane_id) = test_app_with_pane();
+        let now = Instant::now();
+        app.state.queue_pane_scroll(pane_id, 12);
+
+        let mut ticks = 0;
+        while app.state.scroll_anim.is_some() {
+            app.tick_scroll_animation(now);
+            ticks += 1;
+            assert!(ticks < 100, "scroll animation must terminate");
+        }
+        assert!(ticks > 1, "a 12-line scroll should span multiple frames");
+        assert!(app.scroll_anim_deadline.is_none());
+    }
+
+    #[test]
+    fn tick_scroll_animation_noop_without_pending() {
+        let (mut app, _pane_id) = test_app_with_pane();
+        app.scroll_anim_deadline = Some(Instant::now());
+        app.tick_scroll_animation(Instant::now());
+        assert!(app.scroll_anim_deadline.is_none());
     }
 
     #[test]

@@ -30,6 +30,35 @@ pub(crate) struct SelectionAutoscroll {
     pub last_mouse_screen_row: u16,
     pub inner_rect: Rect,
 }
+
+/// In-progress eased scrollback scroll for a terminal pane.
+///
+/// Terminal panes render on an integer character-cell grid, so true sub-line
+/// scrolling is impossible — but a multi-line scroll can be played out as a
+/// rapid sequence of single-line steps with ease-out deceleration, which the
+/// eye reads as smooth. Mouse-wheel notches accumulate into `pending` and a
+/// per-frame tick drains it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScrollAnimation {
+    pub pane_id: crate::layout::PaneId,
+    /// Remaining lines to travel. Positive scrolls up into scrollback,
+    /// negative scrolls back down toward the live tail.
+    pub pending: isize,
+}
+
+impl ScrollAnimation {
+    /// Fraction of the remaining distance consumed per tick. Lower = longer,
+    /// gentler glide; higher = snappier.
+    const EASE_FACTOR: f32 = 0.34;
+
+    /// Lines to move on the next tick: an ease-out step toward the target,
+    /// always at least one line so the animation never stalls.
+    pub fn next_step(&self) -> isize {
+        let mag = self.pending.unsigned_abs() as f32;
+        let step = (mag * Self::EASE_FACTOR).ceil().max(1.0).min(mag) as isize;
+        step * self.pending.signum()
+    }
+}
 use crate::terminal_theme::TerminalTheme;
 use crate::workspace::Workspace;
 
@@ -935,6 +964,8 @@ pub struct AppState {
     pub(crate) tab_press: Option<TabPressState>,
     pub selection: Option<Selection>,
     pub selection_autoscroll: Option<SelectionAutoscroll>,
+    /// In-progress eased scrollback animation for a terminal pane, if any.
+    pub(crate) scroll_anim: Option<ScrollAnimation>,
     pub context_menu: Option<ContextMenuState>,
     // Notifications
     pub update_available: Option<String>,
@@ -964,6 +995,8 @@ pub struct AppState {
     pub mouse_capture: bool,
     /// Lines scrolled per mouse-wheel notch in pane scrollback.
     pub wheel_scroll_lines: usize,
+    /// Animate scrollback scrolling with eased momentum. Mirrors config.
+    pub smooth_scroll: bool,
     pub confirm_close: bool,
     pub prompt_new_tab_name: bool,
     pub show_agent_labels_on_pane_borders: bool,
@@ -1184,6 +1217,7 @@ impl AppState {
             tab_press: None,
             selection: None,
             selection_autoscroll: None,
+            scroll_anim: None,
             context_menu: None,
             update_available: None,
             update_install_command: "herdr update".into(),
@@ -1205,6 +1239,7 @@ impl AppState {
             agent_panel_scope: AgentPanelScope::AllWorkspaces,
             mouse_capture: true,
             wheel_scroll_lines: 1,
+            smooth_scroll: true,
             confirm_close: true,
             prompt_new_tab_name: true,
             show_agent_labels_on_pane_borders: false,
@@ -1275,6 +1310,49 @@ impl AppState {
 mod tests {
     use super::*;
     use crossterm::event::KeyEvent;
+
+    /// Drain an animation the way the runtime tick does, returning the
+    /// per-tick step sizes until the target is reached.
+    fn drain_scroll(pending: isize) -> Vec<isize> {
+        let mut anim = ScrollAnimation {
+            pane_id: crate::layout::PaneId::from_raw(1),
+            pending,
+        };
+        let mut steps = Vec::new();
+        while anim.pending != 0 {
+            let step = anim.next_step();
+            assert_ne!(step, 0, "step must always make progress");
+            steps.push(step);
+            anim.pending -= step;
+            assert!(steps.len() < 1000, "animation must terminate");
+        }
+        steps
+    }
+
+    #[test]
+    fn scroll_animation_single_line_is_one_step() {
+        assert_eq!(drain_scroll(1), vec![1]);
+        assert_eq!(drain_scroll(-1), vec![-1]);
+    }
+
+    #[test]
+    fn scroll_animation_eases_out_and_reaches_target() {
+        for &total in &[3_isize, 10, 40, 250, -7, -100] {
+            let steps = drain_scroll(total);
+            // Steps sum exactly to the requested travel.
+            assert_eq!(steps.iter().sum::<isize>(), total);
+            // Every step moves in the target's direction.
+            assert!(steps.iter().all(|s| s.signum() == total.signum()));
+            // Ease-out: step magnitude is monotonically non-increasing.
+            let mags: Vec<isize> = steps.iter().map(|s| s.abs()).collect();
+            assert!(
+                mags.windows(2).all(|w| w[0] >= w[1]),
+                "expected decelerating steps, got {mags:?}"
+            );
+            // A long scroll still settles quickly (logarithmic decay).
+            assert!(steps.len() <= 40, "too many steps for {total}: {}", steps.len());
+        }
+    }
 
     #[test]
     fn built_in_theme_names_resolve() {

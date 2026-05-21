@@ -30,6 +30,9 @@ pub(crate) const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
 pub(crate) const HEADLESS_ANIMATION_INTERVAL: Duration = Duration::from_millis(128);
 pub(crate) const HEADLESS_ANIMATION_TICK_STEP: u32 = 8;
 pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
+/// Tick interval for the eased scrollback animation (~60 Hz, matching the
+/// render cap — finer ticks would only be coalesced away by the frame limiter).
+pub(crate) const SCROLL_ANIM_INTERVAL: Duration = Duration::from_millis(16);
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
@@ -79,6 +82,8 @@ pub struct App {
     pub(crate) next_animation_tick: Option<Instant>,
     pub(crate) next_auto_update_check: Option<Instant>,
     pub(crate) selection_autoscroll_deadline: Option<Instant>,
+    /// Next tick for the eased scrollback animation, when one is in progress.
+    pub(crate) scroll_anim_deadline: Option<Instant>,
     pub(crate) session_save_deadline: Option<Instant>,
     pub(crate) last_render_at: Option<Instant>,
     pub(crate) suppressed_repeat_keys:
@@ -389,6 +394,7 @@ impl App {
             tab_press: None,
             selection: None,
             selection_autoscroll: None,
+            scroll_anim: None,
             context_menu: None,
             update_available,
             update_install_command,
@@ -410,6 +416,7 @@ impl App {
             agent_panel_scope,
             mouse_capture: config.ui.mouse_capture,
             wheel_scroll_lines: config.ui.wheel_scroll_lines.max(1),
+            smooth_scroll: config.ui.smooth_scroll,
             confirm_close: config.ui.confirm_close,
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
@@ -484,6 +491,7 @@ impl App {
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
             session_save_deadline: None,
             selection_autoscroll_deadline: None,
+            scroll_anim_deadline: None,
             last_render_at: None,
             suppressed_repeat_keys: HashSet::new(),
             api_rx,
@@ -869,6 +877,7 @@ impl App {
                     .clamp(self.state.sidebar_min_width, self.state.sidebar_max_width);
                 self.state.mouse_capture = config.ui.mouse_capture;
                 self.state.wheel_scroll_lines = config.ui.wheel_scroll_lines.max(1);
+                self.state.smooth_scroll = config.ui.smooth_scroll;
                 self.state.confirm_close = config.ui.confirm_close;
                 self.state.prompt_new_tab_name = config.ui.prompt_new_tab_name;
                 self.state.show_agent_labels_on_pane_borders =

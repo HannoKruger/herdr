@@ -198,6 +198,9 @@ pub struct UiConfig {
     /// Lower values give finer, smoother control on high-resolution touchpads;
     /// raise it (e.g. 3) for faster scrolling with a notched mouse wheel.
     pub wheel_scroll_lines: usize,
+    /// Animate scrollback scrolling with eased momentum across frames instead
+    /// of jumping instantly. Default: true.
+    pub smooth_scroll: bool,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
     /// Ask for a tab name before creating a new tab. Default: true.
@@ -286,6 +289,7 @@ impl Default for UiConfig {
             sidebar_max_width: 36,
             mouse_capture: true,
             wheel_scroll_lines: 1,
+            smooth_scroll: true,
             confirm_close: true,
             prompt_new_tab_name: true,
             show_agent_labels_on_pane_borders: false,

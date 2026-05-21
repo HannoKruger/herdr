@@ -1095,39 +1095,70 @@ impl AppState {
             .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
     }
 
-    pub(super) fn handle_terminal_wheel(&mut self, mouse: MouseEvent) {
-        let lines_per_notch = self.wheel_scroll_lines.max(1);
+    /// Add `delta_up` lines (positive scrolls up into scrollback) to the eased
+    /// scroll animation for `pane_id`. Successive wheel notches accumulate so a
+    /// fast flick builds momentum; a reversal cancels pending travel.
+    pub(crate) fn queue_pane_scroll(&mut self, pane_id: crate::layout::PaneId, delta_up: isize) {
+        if delta_up == 0 {
+            return;
+        }
+        match self.scroll_anim {
+            Some(ref mut anim) if anim.pane_id == pane_id => {
+                anim.pending += delta_up;
+                if anim.pending == 0 {
+                    self.scroll_anim = None;
+                }
+            }
+            _ => {
+                self.scroll_anim = Some(crate::app::state::ScrollAnimation {
+                    pane_id,
+                    pending: delta_up,
+                });
+            }
+        }
+    }
 
+    /// Apply one wheel notch to `pane_id`'s scrollback — eased when
+    /// `smooth_scroll` is enabled, otherwise an immediate jump.
+    fn apply_wheel_scroll(&mut self, pane_id: crate::layout::PaneId, kind: MouseEventKind) {
+        let lines = self.wheel_scroll_lines.max(1) as isize;
+        let delta_up = match kind {
+            MouseEventKind::ScrollUp => lines,
+            MouseEventKind::ScrollDown => -lines,
+            _ => return,
+        };
+        if self.smooth_scroll {
+            self.queue_pane_scroll(pane_id, delta_up);
+        } else if delta_up > 0 {
+            self.scroll_pane_up(pane_id, delta_up as usize);
+        } else {
+            self.scroll_pane_down(pane_id, delta_up.unsigned_abs());
+        }
+    }
+
+    pub(super) fn handle_terminal_wheel(&mut self, mouse: MouseEvent) {
         if let Some(info) = self.pane_at(mouse.column, mouse.row).cloned() {
             self.focus_pane(info.id);
             if self.forward_pane_wheel(&info, mouse) {
                 return;
             }
-            match mouse.kind {
-                MouseEventKind::ScrollUp => self.scroll_pane_up(info.id, lines_per_notch),
-                MouseEventKind::ScrollDown => self.scroll_pane_down(info.id, lines_per_notch),
-                _ => {}
-            }
+            self.apply_wheel_scroll(info.id, mouse.kind);
             return;
         }
 
         if let Some(info) = self.pane_frame_at(mouse.column, mouse.row).cloned() {
             self.focus_pane(info.id);
-            match mouse.kind {
-                MouseEventKind::ScrollUp => self.scroll_pane_up(info.id, lines_per_notch),
-                MouseEventKind::ScrollDown => self.scroll_pane_down(info.id, lines_per_notch),
-                _ => {}
-            }
+            self.apply_wheel_scroll(info.id, mouse.kind);
             return;
         }
 
         if let Some(ws_idx) = self.active {
-            if let Some(rt) = self.focused_runtime_in_workspace(ws_idx) {
-                match mouse.kind {
-                    MouseEventKind::ScrollUp => rt.scroll_up(lines_per_notch),
-                    MouseEventKind::ScrollDown => rt.scroll_down(lines_per_notch),
-                    _ => {}
-                }
+            if let Some(pane_id) = self
+                .workspaces
+                .get(ws_idx)
+                .and_then(|ws| ws.focused_pane_id())
+            {
+                self.apply_wheel_scroll(pane_id, mouse.kind);
             }
         }
     }

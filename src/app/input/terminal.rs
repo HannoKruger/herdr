@@ -345,7 +345,7 @@ mod tests {
             .expect("scroll metrics after wheel");
         assert_eq!(
             end_metrics.offset_from_bottom,
-            start_metrics.offset_from_bottom + 3
+            start_metrics.offset_from_bottom + 1
         );
 
         let selection = app.state.selection.as_ref().expect("selection after wheel");
