@@ -2120,6 +2120,21 @@ impl HeadlessServer {
             changed = true;
         }
 
+        // Drive the eased scrollback animation. Without this the server never
+        // applies queued wheel scrolls, so scrollback does not move at all.
+        if self.app.state.scroll_anim.is_some() {
+            if self
+                .app
+                .scroll_anim_deadline
+                .map_or(true, |deadline| now >= deadline)
+            {
+                self.app.tick_scroll_animation(now);
+                changed = true;
+            }
+        } else {
+            self.app.scroll_anim_deadline = None;
+        }
+
         self.app.start_git_status_refresh_if_due(now);
 
         if self
@@ -2738,6 +2753,67 @@ mod tests {
         assert!(
             cursor.as_ref().is_none_or(|cursor| !cursor.visible),
             "cursor: {cursor:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn headless_scheduled_tasks_drive_queued_scrollback() {
+        // Regression test: a mouse-wheel scroll queues an eased animation that
+        // only the scheduled-task pass applies. The server's headless pass
+        // must drive it — otherwise scrollback never moves in server mode.
+        let mut server = test_headless_server();
+
+        let mut ws = crate::workspace::Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        let mut bytes = Vec::new();
+        for line in 0..200 {
+            bytes.extend_from_slice(format!("line {line:03}\r\n").as_bytes());
+        }
+        let runtime =
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(20, 5, 16 * 1024, &bytes);
+        ws.insert_test_runtime(pane_id, runtime);
+        server.app.state.workspaces = vec![ws];
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+        server.app.state.mode = crate::app::Mode::Terminal;
+
+        let offset_before = server
+            .app
+            .state
+            .pane_scroll_metrics(pane_id)
+            .expect("scroll metrics")
+            .offset_from_bottom;
+        assert_eq!(offset_before, 0, "pane starts at the live tail");
+
+        // Queue a scrollback scroll exactly as a mouse-wheel notch does.
+        server.app.state.queue_pane_scroll(pane_id, 12);
+        assert!(
+            server.app.state.scroll_anim.is_some(),
+            "wheel notch should queue an animation"
+        );
+
+        // Run the server's scheduled-task pass until the animation drains.
+        let mut now = Instant::now();
+        let mut guard = 0;
+        while server.app.state.scroll_anim.is_some() {
+            now += Duration::from_millis(16);
+            server.handle_scheduled_tasks_headless(now);
+            guard += 1;
+            assert!(
+                guard < 200,
+                "headless server never drained the queued scroll — scrollback is dead"
+            );
+        }
+
+        let offset_after = server
+            .app
+            .state
+            .pane_scroll_metrics(pane_id)
+            .expect("scroll metrics")
+            .offset_from_bottom;
+        assert_eq!(
+            offset_after, 12,
+            "headless server must apply the full queued wheel scroll"
         );
     }
 
