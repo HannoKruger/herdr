@@ -780,12 +780,20 @@ impl AppState {
                 pane_id,
                 agent,
                 state,
-            } => self
-                .update_terminal_state(pane_id, |terminal| {
-                    terminal.set_detected_state(agent, state)
-                })
-                .into_iter()
-                .collect(),
+            } => {
+                let updates: Vec<PaneStateUpdate> = self
+                    .update_terminal_state(pane_id, |terminal| {
+                        terminal.set_detected_state(agent, state)
+                    })
+                    .into_iter()
+                    .collect();
+                // Capture the session id while the agent is alive, so a
+                // restored session can resume it.
+                if agent == Some(crate::detect::Agent::Claude) {
+                    self.capture_claude_session(pane_id);
+                }
+                updates
+            }
             AppEvent::HookStateReported {
                 pane_id,
                 source,
@@ -868,6 +876,52 @@ impl AppState {
         };
         self.apply_pane_state_change(ws_idx, pane_id, &change);
         Some(update)
+    }
+
+    /// Record the Claude Code session id of a pane the moment herdr detects
+    /// `claude` running there, so a restored session can resume the
+    /// conversation. The id is taken from the process command line when it
+    /// pins a session (`--resume` / `--session-id`) — exact, and unambiguous
+    /// even for several agents in one directory. A bare `claude` carries no
+    /// id and is left alone. Resolved once per pane.
+    fn capture_claude_session(&mut self, pane_id: PaneId) {
+        let Some(terminal_id) = self
+            .workspaces
+            .iter()
+            .find_map(|ws| ws.pane_state(pane_id))
+            .map(|pane| pane.attached_terminal_id.clone())
+        else {
+            return;
+        };
+        if self
+            .terminals
+            .get(&terminal_id)
+            .map_or(true, |terminal| terminal.claude_session_id.is_some())
+        {
+            return; // already known (launch-injected or captured earlier)
+        }
+
+        let Some(runtime) = self.terminal_runtimes.get(&terminal_id) else {
+            return;
+        };
+        let session_id = crate::platform::foreground_job(runtime.child_pid())
+            .map(|job| job.processes)
+            .unwrap_or_default()
+            .iter()
+            .find_map(|process| {
+                process
+                    .cmdline
+                    .as_deref()
+                    .and_then(crate::claude_session::session_from_cmdline)
+            });
+        let Some(session_id) = session_id else {
+            return;
+        };
+
+        if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
+            terminal.claude_session_id = Some(session_id);
+        }
+        self.mark_session_dirty();
     }
 
     fn apply_pane_state_change(

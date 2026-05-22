@@ -20,6 +20,7 @@ const NESTED_HERDR_MESSAGES: [&str; 6] = [
 
 mod api;
 mod app;
+mod claude_session;
 mod cli;
 mod client;
 mod config;
