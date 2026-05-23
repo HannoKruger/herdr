@@ -186,11 +186,17 @@ fn restore_tab(
         // A pane that was running Claude Code is relaunched with
         // `claude --resume <id>` so the conversation continues; every other
         // pane gets a fresh shell as before.
+        //
+        // Go through a login shell so `claude` is found via the user's PATH
+        // (e.g. `~/.local/bin`, which a non-login spawn would miss). `exec`
+        // replaces the shell so the pane's foreground process is claude
+        // itself — herdr's detector and command-line capture still see it.
         let claude_argv = saved_claude_session.as_ref().map(|session_id| {
             vec![
-                "claude".to_string(),
-                "--resume".to_string(),
-                session_id.clone(),
+                "bash".to_string(),
+                "-l".to_string(),
+                "-c".to_string(),
+                format!("exec claude --resume {session_id}"),
             ]
         });
 
